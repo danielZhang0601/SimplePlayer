@@ -1,7 +1,7 @@
 /*
  * PlayerCore.h
  *
- *  Created on: 2015年8月10日
+ *  Created on: 2015骞�8鏈�10鏃�
  *      Author: danielzhang
  */
 
@@ -18,6 +18,17 @@ extern "C" {
 #include <libavformat/avformat.h>
 #include <libswscale/swscale.h>
 }
+
+//GL
+#include <GLES/gl.h>
+#include <GLES2/gl2ext.h>
+#include "VertexShaderSL.h"
+#include "FragmentShaderSL.h"
+
+#define ATTRIB_VERTEX 3
+#define ATTRIB_TEXTURE 4
+
+#include "Alog.h"
 
 #include <list>
 #include <pthread.h>
@@ -38,6 +49,9 @@ public:
 	void *dataThreadFun();
 	void *decodeThreadFun();
 
+	bool setupGraphics(int width, int height);
+	void renderFrame();
+
 private:
 	AVFormatContext *pFormatCtx;
 	AVCodecContext *pCodecCtx;
@@ -50,11 +64,23 @@ private:
 	pthread_mutex_t preDecodeListMutex, decodedListMutex;
 	pthread_t dataThread, decodeThread;
 
+	long startTime;
+
+	GLuint gProgram;
+	GLuint g_texYId, g_texUId, g_texVId;
+	GLuint textureUniformY, textureUniformU, textureUniformV;
+
 	void addToPreDecodeList(AVPacket *packet);
 	AVPacket *getFromPreDecodeList();
 	void addToDecodedList(AVFrame *frame);
 	AVFrame *getFromDecodedList();
 	void wait();
+
+	void printGLString(const char *name, GLenum s);
+	void checkGlError(const char* op);
+	GLuint loadShader(GLenum shaderType, const char* pSource);
+	GLuint createProgram(const char* pVertexSource,
+			const char* pFragmentSource);
 };
 
 #endif /* NATIVEPLAYER_PLAYERCORE_H_ */

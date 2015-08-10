@@ -2,14 +2,17 @@ package com.zxd.simpleplayer;
 
 import android.app.Activity;
 import android.os.Bundle;
+import android.support.v4.widget.SimpleCursorAdapter.ViewBinder;
 import android.util.DisplayMetrics;
 import android.view.Menu;
 import android.view.MenuItem;
+import android.view.View;
+import android.view.View.OnClickListener;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.LinearLayout.LayoutParams;
 
-public class MainActivity extends Activity
+public class MainActivity extends Activity implements OnClickListener
 {
 
 	private PlayerGLSurfaceView glSurfaceView;
@@ -54,6 +57,7 @@ public class MainActivity extends Activity
 		
 		player = new NativePlayer();
 		glSurfaceView.setRenderer(player);
+		play.setOnClickListener(this);
 	}
 
 	@Override
@@ -76,5 +80,37 @@ public class MainActivity extends Activity
 			return true;
 		}
 		return super.onOptionsItemSelected(item);
+	}
+
+	@Override
+	public void onClick(View v) {
+		if (v == play)
+		{
+			player.start();
+		}
+		else if (v == pause)
+		{
+			player.pause();
+		}
+		else if (v == stop)
+		{
+			player.stop();
+		}
+		else if (v == slow)
+		{
+			player.setPlaySpeed(NativePlayer.PlaySpeed.SLOW);
+		}
+		else if (v == normal)
+		{
+			player.setPlaySpeed(NativePlayer.PlaySpeed.NORMAL);
+		}
+		else if (v == fast)
+		{
+			player.setPlaySpeed(NativePlayer.PlaySpeed.FAST);
+		}
+		else
+		{
+			
+		}
 	}
 }
