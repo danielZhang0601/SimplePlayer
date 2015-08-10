@@ -1,9 +1,6 @@
-*.classpath
 .cproject
+.classpath
 *.prefs
 bin/
 obj/
-project.properties
-.classpath
-*.cproject
 project.properties
