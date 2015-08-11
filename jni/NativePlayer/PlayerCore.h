@@ -22,6 +22,7 @@ extern "C" {
 //GL
 #include <GLES/gl.h>
 #include <GLES2/gl2ext.h>
+
 #include "VertexShaderSL.h"
 #include "FragmentShaderSL.h"
 
@@ -56,6 +57,7 @@ private:
 	AVFormatContext *pFormatCtx;
 	AVCodecContext *pCodecCtx;
 	AVCodec *pCodec;
+	AVFrame *currentFrame;
 	int videoindex;
 	bool isRunning;
 	std::list<AVPacket *> preDecodeList;
@@ -64,7 +66,7 @@ private:
 	pthread_mutex_t preDecodeListMutex, decodedListMutex;
 	pthread_t dataThread, decodeThread;
 
-	long startTime;
+	long lastPTS,currentPTS,lastShow,currentShow;
 
 	GLuint gProgram;
 	GLuint g_texYId, g_texUId, g_texVId;
@@ -81,6 +83,7 @@ private:
 	GLuint loadShader(GLenum shaderType, const char* pSource);
 	GLuint createProgram(const char* pVertexSource,
 			const char* pFragmentSource);
+	bool getFrameByTime();
 };
 
 #endif /* NATIVEPLAYER_PLAYERCORE_H_ */

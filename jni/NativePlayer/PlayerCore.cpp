@@ -1,6 +1,7 @@
 #include "PlayerCore.h"
 #include <sys/time.h>
 #include <unistd.h>
+#include <assert.h>
 
 static const GLfloat vertexVertices[] = { -1.0f, -1.0f, 1.0f, -1.0f, -1.0f,
 		1.0f, 1.0f, 1.0f, };
@@ -27,7 +28,9 @@ PlayerCore::PlayerCore() {
 	dataThread = (pthread_t) 0;
 	decodeThread = (pthread_t) 0;
 	isRunning = false;
-	startTime = -1;
+	currentFrame = NULL;
+	lastPTS = -1;
+	lastShow = -1;
 }
 
 PlayerCore::~PlayerCore() {
@@ -123,27 +126,34 @@ void *PlayerCore::dataThreadFun() {
 void *PlayerCore::decodeThreadFun() {
 	int ret, gotPicture;
 	while (true) {
-		LOGE("preDecodeList size: %d",preDecodeList.size());
-		LOGE("decodedList size: %d",decodedList.size());
+//		LOGE("decodeThreadFun preDecodeList size: %d", preDecodeList.size());
+//		LOGE("decodeThreadFun decodedList size: %d", decodedList.size());
 		if (preDecodeList.size() < 1) {
 			wait();
 			continue;
 		}
+		assert(false);
 		if (decodedList.size() >= decodedListMax) {
 			wait();
-			continue;
+			break;
 		}
 		AVPacket *packet = getFromPreDecodeList();
+		LOGE("videoindex:%d__stream_index:%d",videoindex,packet->stream_index);
 		if (packet->stream_index == videoindex) {
+
 			AVFrame *pFrame = av_frame_alloc();
 			ret = avcodec_decode_video2(pCodecCtx, pFrame, &gotPicture, packet);
 			if (ret < 0) {
 				LOGE("Decode Error.\n");
+				av_free_packet(packet);
 				return 0;
 			}
 			if (gotPicture) {
-				LOGE("gotPicture:%d",gotPicture);
+				LOGE("gotPicture:%d", gotPicture);
 				addToDecodedList(pFrame);
+				LOGE("gotPicture decodedList size: %d", decodedList.size());
+			}else{
+				av_frame_free(&pFrame);
 			}
 		}
 		av_free_packet(packet);
@@ -152,9 +162,12 @@ void *PlayerCore::decodeThreadFun() {
 }
 
 AVFrame* PlayerCore::getFromDecodedList() {
+	AVFrame* frame = NULL;
 	pthread_mutex_lock(&decodedListMutex);
-	AVFrame* frame = decodedList.front();
-	decodedList.pop_front();
+	if (decodedList.size() > 0) {
+		AVFrame* frame = decodedList.front();
+			decodedList.pop_front();
+	}
 	pthread_mutex_unlock(&decodedListMutex);
 	return frame;
 }
@@ -243,7 +256,70 @@ bool PlayerCore::setupGraphics(int width, int height) {
 }
 
 void PlayerCore::renderFrame() {
+	if (!getFrameByTime())
+		return;
+	glClearColor(0.0, 0.0, 0.0, 0.0);
+	checkGlError("glClearColor");
+	glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT);
+	checkGlError("glClear");
+	glActiveTexture (GL_TEXTURE0);
+	checkGlError("glActiveTexture GL_TEXTURE0");
+	LOGI("g_texYId:%d", g_texYId);
+	glBindTexture(GL_TEXTURE_2D, g_texYId);
+	checkGlError("glBindTexture GL_TEXTURE0");
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, currentFrame->width, currentFrame->height, 0,
+			GL_LUMINANCE, GL_UNSIGNED_BYTE, currentFrame->data[0]);
+	checkGlError("glTexImage2D GL_TEXTURE0");
+	glUniform1i(textureUniformY, 0);
+	checkGlError("glUniform1i GL_TEXTURE0");
+	glActiveTexture (GL_TEXTURE1);
+	checkGlError("glActiveTexture GL_TEXTURE1");
+	glBindTexture(GL_TEXTURE_2D, g_texUId);
+	checkGlError("glBindTexture GL_TEXTURE1");
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, currentFrame->width / 2,
+			currentFrame->height / 2, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE, currentFrame->data[1]);
+	checkGlError("glTexImage2D GL_TEXTURE1");
+	glUniform1i(textureUniformU, 1);
+	checkGlError("glUniform1i GL_TEXTURE1");
+	glActiveTexture (GL_TEXTURE2);
+	checkGlError("glActiveTexture GL_TEXTURE2");
+	glBindTexture(GL_TEXTURE_2D, g_texVId);
+	checkGlError("glBindTexture GL_TEXTURE2");
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, currentFrame->width / 2,
+			currentFrame->height / 2, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE, currentFrame->data[2]);
+	checkGlError("glTexImage2D GL_TEXTURE2");
+	glUniform1i(textureUniformV, 2);
+	checkGlError("glUniform1i GL_TEXTURE2");
+	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+	checkGlError("glDrawArrays");
+	glFlush();
+	checkGlError("glFlush");
+	av_frame_free(&currentFrame);
+}
 
+bool PlayerCore::getFrameByTime() {
+	return false;
+	if (currentFrame == NULL) {
+		currentFrame = getFromDecodedList();
+	}
+	if (currentFrame == NULL) {
+		return false;
+	}
+	if (lastPTS < 0) {	//first
+		lastPTS = currentFrame->pts;
+		time(&lastShow);
+		return true;
+	} else {
+		currentPTS = currentFrame->pts;
+		time(&currentShow);
+		if (currentPTS - lastPTS <= currentShow - lastShow) {	//show
+			lastPTS = currentPTS;
+			lastShow = currentShow;
+			return true;
+		} else {
+			return false;
+		}
+	}
 }
 
 void PlayerCore::wait() {

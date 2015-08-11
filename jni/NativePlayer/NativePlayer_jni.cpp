@@ -46,9 +46,10 @@ JNIEXPORT void JNICALL Java_com_zxd_simpleplayer_NativePlayer_nativeSurfaceCreat
 
 JNIEXPORT jboolean JNICALL Java_com_zxd_simpleplayer_NativePlayer_nativeSurfaceChanged(
 		JNIEnv *env, jobject clazz, jint width, jint height) {
-	return true;
+	return player.setupGraphics(width,height);
 }
 
 JNIEXPORT void JNICALL Java_com_zxd_simpleplayer_NativePlayer_nativeDrawFrame(
 		JNIEnv *env, jobject clazz) {
+	player.renderFrame();
 }
