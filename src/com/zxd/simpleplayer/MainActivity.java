@@ -1,7 +1,10 @@
 package com.zxd.simpleplayer;
 
+import java.io.File;
+
 import android.app.Activity;
 import android.os.Bundle;
+import android.os.Environment;
 import android.support.v4.widget.SimpleCursorAdapter.ViewBinder;
 import android.util.DisplayMetrics;
 import android.view.Menu;
@@ -58,6 +61,7 @@ public class MainActivity extends Activity implements OnClickListener
 		player = new NativePlayer();
 		glSurfaceView.setRenderer(player);
 		play.setOnClickListener(this);
+		player.setDataSource(Environment.getExternalStorageDirectory().toString()+File.separator+"1080_60.mp4");
 	}
 
 	@Override

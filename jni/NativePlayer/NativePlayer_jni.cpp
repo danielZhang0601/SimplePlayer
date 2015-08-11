@@ -16,12 +16,12 @@ JNIEXPORT void JNICALL Java_com_zxd_simpleplayer_NativePlayer_nativeInit(
 
 JNIEXPORT void JNICALL Java_com_zxd_simpleplayer_NativePlayer_nativeSetDataSource(
 		JNIEnv *env, jobject clazz, jstring path) {
-	player.init(env->GetStringUTFChars(path,false));
+	player.init(env->GetStringUTFChars(path,JNI_FALSE));
 }
 
 JNIEXPORT void JNICALL Java_com_zxd_simpleplayer_NativePlayer_nativeStart(
 		JNIEnv *env, jobject clazz) {
-
+	player.start();
 }
 
 JNIEXPORT void JNICALL Java_com_zxd_simpleplayer_NativePlayer_nativePause(

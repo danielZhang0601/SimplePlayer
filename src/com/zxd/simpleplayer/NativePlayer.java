@@ -20,7 +20,7 @@ public class NativePlayer implements Renderer {
 	private native void nativeInit();
 
 	public void setDataSource(String path) {
-
+		nativeSetDataSource(path);
 	}
 
 	private native void nativeSetDataSource(String path);

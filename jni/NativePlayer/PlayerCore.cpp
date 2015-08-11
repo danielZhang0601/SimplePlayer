@@ -123,6 +123,8 @@ void *PlayerCore::dataThreadFun() {
 void *PlayerCore::decodeThreadFun() {
 	int ret, gotPicture;
 	while (true) {
+		LOGE("preDecodeList size: %d",preDecodeList.size());
+		LOGE("decodedList size: %d",decodedList.size());
 		if (preDecodeList.size() < 1) {
 			wait();
 			continue;
