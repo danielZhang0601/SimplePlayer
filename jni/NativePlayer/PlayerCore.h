@@ -34,6 +34,8 @@ extern "C" {
 #include <list>
 #include <pthread.h>
 
+#include <sys/time.h>
+
 class PlayerCore {
 public:
 	PlayerCore();
@@ -41,41 +43,47 @@ public:
 
 	bool init(const char *path);
 	void start();
-	void pause();
-	void resume();
 	void stop();
-	bool getRunning();
-	void setRunning(bool isRun);
+	bool getIsPause();
+	void setIsPause(bool pause);
 
 	void *dataThreadFun();
 	void *decodeThreadFun();
 
 	bool setupGraphics(int width, int height);
 	void renderFrame();
-
+	bool saveFrame(const char *filePath);
+	void setSpeed(int sp);
 private:
 	AVFormatContext *pFormatCtx;
 	AVCodecContext *pCodecCtx;
 	AVCodec *pCodec;
 	AVFrame *currentFrame;
-	int videoindex;
-	bool isRunning;
+
+	int videoindex,audioindex;
+	bool isPause,isRun;
 	std::list<AVPacket *> preDecodeList;
 	std::list<AVFrame *> decodedList;
 	int preDecodeListMax, decodedListMax;
 	pthread_mutex_t preDecodeListMutex, decodedListMutex;
 	pthread_t dataThread, decodeThread;
 
-	long lastPTS,currentPTS,lastShow,currentShow;
+	int64_t lastPTS,currentPTS;
+	struct timeval lastShow, currentShow;
+	int speed;
 
 	GLuint gProgram;
 	GLuint g_texYId, g_texUId, g_texVId;
 	GLuint textureUniformY, textureUniformU, textureUniformV;
 
+	int getPreDecodeListSize();
+	int getDecodedListSize();
+	void clearPreDecodeList();
+	void clearDecodeList();
 	void addToPreDecodeList(AVPacket *packet);
 	AVPacket *getFromPreDecodeList();
 	void addToDecodedList(AVFrame *frame);
-	AVFrame *getFromDecodedList();
+	AVFrame *getFromDecodedList(bool isHold);
 	void wait();
 
 	void printGLString(const char *name, GLenum s);
