@@ -36,7 +36,7 @@ void native_stop(JNIEnv *env, jobject clazz) {
 }
 
 jboolean native_save_frame(JNIEnv *env, jobject clazz, jstring path) {
-	return JNI_TRUE;
+	return player.saveFrame(env->GetStringUTFChars(path, NULL));
 }
 
 void native_set_speed(JNIEnv *env, jobject clazz, jint speed) {

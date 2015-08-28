@@ -7,6 +7,13 @@ static const GLfloat vertexVertices[] = { -1.0f, -1.0f, 1.0f, -1.0f, -1.0f,
 static const GLfloat textureVertices[] = { 0.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f,
 		1.0f, 0.0f, };
 
+static const SLEnvironmentalReverbSettings reverbSettings =
+		SL_I3DL2_ENVIRONMENT_PRESET_STONECORRIDOR;
+
+void staticPlayerCallback(SLAndroidSimpleBufferQueueItf bq, void *context) {
+	((PlayerCore*) context)->bqPlayerCallback(bq, NULL);
+}
+
 void *data_thread_fun(void* arg) {
 	return ((PlayerCore*) arg)->dataThreadFun();
 }
@@ -15,18 +22,38 @@ void *decode_thread_fun(void* arg) {
 	return ((PlayerCore*) arg)->decodeThreadFun();
 }
 
+void ffmpeg_log(void* ptr, int level, const char* fmt, va_list vl) {
+	if (level > 16) {
+//		LOGI("ffmpeg log:%s", fmt);
+	} else {
+		LOGE("ffmpeg error:%s", fmt);
+	}
+}
+
 PlayerCore::PlayerCore() {
+	//ffmpeg
 	pFormatCtx = NULL;
-	pCodecCtx = NULL;
-	pCodec = NULL;
+	pVideoCodecCtx = NULL;
+	pAudioCodecCtx = NULL;
+	pVideoCodec = NULL;
+	pAudioCodec = NULL;
 	videoindex = -1;
 	audioindex = -1;
 	preDecodeListMax = 10;
 	decodedListMax = 3;
+
+	//opensl
+	engineObject = NULL;
+	outputMixObject = NULL;
+	outputMixEnvironmentalReverb = NULL;
+	bqPlayerObject = NULL;
+	//thread
 	pthread_mutex_init(&preDecodeListMutex, NULL);
 	pthread_mutex_init(&decodedListMutex, NULL);
 	dataThread = (pthread_t) 0;
 	decodeThread = (pthread_t) 0;
+
+	//control
 	isRun = false;
 	isPause = false;
 	currentFrame = NULL;
@@ -41,7 +68,9 @@ PlayerCore::~PlayerCore() {
 
 bool PlayerCore::init(const char* path) {
 	av_register_all();
+	avcodec_register_all();
 	avformat_network_init();
+	av_log_set_callback(ffmpeg_log);
 	pFormatCtx = avformat_alloc_context();
 	if (avformat_open_input(&pFormatCtx, path, NULL, NULL) != 0) {
 		LOGE("Couldn't open input stream:%s.", path);
@@ -56,7 +85,8 @@ bool PlayerCore::init(const char* path) {
 	for (int i = 0; i < pFormatCtx->nb_streams; i++) {
 		if (pFormatCtx->streams[i]->codec->codec_type == AVMEDIA_TYPE_VIDEO) {
 			videoindex = i;
-		}else if (pFormatCtx->streams[i]->codec->codec_type == AVMEDIA_TYPE_AUDIO) {
+		} else if (pFormatCtx->streams[i]->codec->codec_type
+				== AVMEDIA_TYPE_AUDIO) {
 			audioindex = i;
 		}
 		if (videoindex != -1 && audioindex != -1)
@@ -73,25 +103,50 @@ bool PlayerCore::init(const char* path) {
 
 	LOGI("Find video stream:%d.", videoindex);
 
-	pCodecCtx = pFormatCtx->streams[videoindex]->codec;
-	if (pCodecCtx == NULL) {
-		LOGE("Codec context not found.");
+	pVideoCodecCtx = pFormatCtx->streams[videoindex]->codec;
+	if (pVideoCodecCtx == NULL) {
+		LOGE("VideoCodec context not found.");
 		return false;
 	}
-	LOGI("Find codec context:%d", pCodecCtx->codec_id);
+	LOGI("Find VideoCodec context:%d", pVideoCodecCtx->codec_id);
 
-	pCodec = avcodec_find_decoder(pCodecCtx->codec_id);
-	if (pCodec == NULL) {
-		LOGE("Codec not found.");
+	pVideoCodec = avcodec_find_decoder(pVideoCodecCtx->codec_id);
+	if (pVideoCodec == NULL) {
+		LOGE("VideoCodec not found.");
 		return false;
 	}
-	LOGI("Find codec:%d.", pCodec->id);
+	LOGI("Find VideoCodec:%d.", pVideoCodec->id);
 
-	if (avcodec_open2(pCodecCtx, pCodec, NULL) < 0) {
-		LOGE("Could not open codec.");
+	if (avcodec_open2(pVideoCodecCtx, pVideoCodec, NULL) < 0) {
+		LOGE("Could not open VideoCodec.");
 		return false;
 	}
-	LOGI("Open codec success.");
+	LOGI("Open VideoCodec success.");
+
+	pAudioCodecCtx = pFormatCtx->streams[audioindex]->codec;
+	if (pAudioCodecCtx) {
+		LOGI("Find AudioCodec context:%d", pAudioCodecCtx->codec_id);
+
+		pAudioCodec = avcodec_find_decoder(pAudioCodecCtx->codec_id);
+		if (pAudioCodec) {
+			LOGI("Find AudioCodec:%d.", pAudioCodec->id);
+
+			if (avcodec_open2(pAudioCodecCtx, pAudioCodec, NULL) < 0) {
+				LOGE("Could not open AudioCodec.");
+			} else {
+				LOGI("Open AudioCodec success.");
+			}
+		} else {
+			LOGE("AudioCodec not found.");
+		}
+	} else {
+		LOGE("AudioCodec context not found.");
+	}
+
+	//opensl
+	createEngine();
+	createBufferQueueAudioPlayer(pAudioCodecCtx->sample_rate,
+			pAudioCodecCtx->channels, SL_PCMSAMPLEFORMAT_FIXED_16);
 }
 
 void PlayerCore::start() {
@@ -184,7 +239,7 @@ void *PlayerCore::dataThreadFun() {
 }
 
 void *PlayerCore::decodeThreadFun() {
-	int ret, gotPicture;
+	int ret, gotPicture = 0, gotAudio = 0;
 
 	while (isRun) {
 		if (getPreDecodeListSize() < 1) {
@@ -201,13 +256,11 @@ void *PlayerCore::decodeThreadFun() {
 		if (packet->stream_index == videoindex) {
 
 			AVFrame *pFrame = av_frame_alloc();
-			ret = avcodec_decode_video2(pCodecCtx, pFrame, &gotPicture, packet);
-			if ((ret == 0) || (0 == gotPicture)) {
-				LOGE("ret:%d, gotPicture:%d", ret, gotPicture);
-			}
+			ret = avcodec_decode_video2(pVideoCodecCtx, pFrame, &gotPicture,
+					packet);
 
 			if (ret < 0) {
-				LOGE("Decode Error.\n");
+				LOGE("Decode Video Error.\n");
 				av_frame_free(&pFrame);
 				av_free_packet(packet);
 				return 0;
@@ -218,8 +271,23 @@ void *PlayerCore::decodeThreadFun() {
 			} else {
 				av_frame_free(&pFrame);
 			}
-		}else if (packet->stream_index = audioindex) {
+		} else if (packet->stream_index = audioindex) {
+			AVFrame *pAudioFrame = av_frame_alloc();
+			ret = avcodec_decode_audio4(pAudioCodecCtx, pAudioFrame, &gotAudio,
+					packet);
 
+			if (ret < 0) {
+				LOGE("Decode Audio Error.\n");
+				av_frame_free(&pAudioFrame);
+				av_free_packet(packet);
+				return 0;
+			}
+			if (gotAudio) {
+				audioWrite(pAudioFrame);
+				av_frame_free(&pAudioFrame);
+			} else {
+				av_frame_free(&pAudioFrame);
+			}
 		}
 		av_free_packet(packet);
 		packet = NULL;
@@ -314,10 +382,7 @@ bool PlayerCore::setupGraphics(int width, int height) {
 }
 
 void PlayerCore::renderFrame() {
-	/*if (!getFrameByTime()) {
-	 }*/
 	getFrameByTime();
-	//currentFrame = getFromDecodedList(false);
 
 	if (currentFrame == NULL) {
 		return;
@@ -325,7 +390,7 @@ void PlayerCore::renderFrame() {
 
 	glClearColor(0.0, 0.0, 0.0, 1.0);
 	checkGlError("glClearColor");
-//	glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT);
+	glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT);
 	glClear (GL_COLOR_BUFFER_BIT);
 	checkGlError("glClear");
 	glActiveTexture (GL_TEXTURE0);
@@ -367,12 +432,6 @@ void PlayerCore::renderFrame() {
 	checkGlError("glDrawArrays");
 	glFlush();
 	checkGlError("glFlush");
-
-	/*delete[] currentFrame->data[0];
-	 delete[] currentFrame->data[1];
-	 delete[] currentFrame->data[2];
-	 delete currentFrame;
-	 currentFrame = NULL;*/
 }
 
 void PlayerCore::setSpeed(int sp) {
@@ -414,9 +473,7 @@ bool PlayerCore::getFrameByTime() {
 	} else {
 		currentPTS = tmpFrame->pkt_dts;
 		gettimeofday(&currentShow, 0);
-//		LOGE("time :%ld,speed:%d",
-//				(currentShow.tv_sec - lastShow.tv_sec) * 1000000
-//						+ (currentShow.tv_usec - lastShow.tv_usec), speed);
+
 		if ((currentShow.tv_sec - lastShow.tv_sec) * 1000000
 				+ (currentShow.tv_usec - lastShow.tv_usec) > speed) {	//show
 			lastPTS = currentPTS;
@@ -432,49 +489,97 @@ bool PlayerCore::getFrameByTime() {
 			return false;
 		}
 	}
-
-	/*if (currentFrame == NULL) {
-	 currentFrame = getFromDecodedList(false);
-	 }
-	 if (currentFrame == NULL) {
-	 return false;
-	 }
-	 if (lastPTS < 0) {	//first
-	 lastPTS = currentFrame->pkt_dts;
-	 gettimeofday(&lastShow, 0);
-	 return true;
-	 } else {
-	 currentPTS = currentFrame->pkt_dts;
-	 gettimeofday(&currentShow, 0);
-	 LOGE("time :%d",
-	 (currentShow.tv_sec - lastShow.tv_sec) * 1000000
-	 + (currentShow.tv_usec - lastShow.tv_usec));
-	 if ((currentShow.tv_sec - lastShow.tv_sec) * 1000000
-	 + (currentShow.tv_usec - lastShow.tv_usec) > speed) {	//show
-	 lastPTS = currentPTS;
-	 lastShow = currentShow;
-	 return true;
-	 } else {
-	 return false;
-	 }
-	 }*/
 }
 
 bool PlayerCore::saveFrame(const char *filePath) {
-	FILE *fp_save = fopen(filePath, "wb+");
-	LOGE("save file:%s", filePath);
-	if (NULL == fp_save) {
-		LOGE("open error.");
+	AVFormatContext* pIMGFormatCtx;
+	AVOutputFormat* fmt;
+	AVStream* video_st;
+	AVCodecContext* pIMGCodecCtx;
+	AVCodec* pIMGCodec;
+
+	uint8_t* picture_buf;
+	AVFrame* picture;
+	int size;
+
+	AVFrame *tmpFram = getFromDecodedList(true);
+	if (tmpFram == NULL) {
+		LOGE("not get frame.");
 		return false;
 	}
-	AVFrame *frame = getFromDecodedList(true);
-	if (NULL != frame) {
-		fwrite(frame->data[0], 1, frame->width * frame->height, fp_save);
-		fwrite(frame->data[1], 1, frame->width * frame->height / 4, fp_save);
-		fwrite(frame->data[2], 1, frame->width * frame->height / 4, fp_save);
+
+	picture = av_frame_alloc();
+	memcpy(picture, tmpFram, sizeof(AVFrame));
+
+	int in_w = picture->width, in_h = picture->height;						//宽高
+
+	LOGI("in_w:%d,in_h:%d", in_w, in_h);
+
+	av_register_all();
+	avcodec_register_all();
+
+	avformat_alloc_output_context2(&pIMGFormatCtx, NULL, NULL, filePath);
+	fmt = pIMGFormatCtx->oformat;
+
+	video_st = avformat_new_stream(pIMGFormatCtx, 0);
+	if (video_st == NULL) {
+		return false;
 	}
-	fclose(fp_save);
-	LOGE("save success.");
+	pIMGCodecCtx = video_st->codec;
+	pIMGCodecCtx->codec_id = fmt->video_codec;
+	pIMGCodecCtx->codec_type = AVMEDIA_TYPE_VIDEO;
+	pIMGCodecCtx->pix_fmt = PIX_FMT_YUVJ420P;
+
+	pIMGCodecCtx->width = in_w;
+	pIMGCodecCtx->height = in_h;
+
+	pIMGCodecCtx->time_base.num = 1;
+	pIMGCodecCtx->time_base.den = 25;
+	//输出格式信息
+	av_dump_format(pIMGFormatCtx, 0, filePath, 1);
+
+	pIMGCodec = avcodec_find_encoder(pIMGCodecCtx->codec_id);
+	if (!pIMGCodec) {
+		LOGE("avcodec_find_encoder error");
+		return false;
+	}
+	if (avcodec_open2(pIMGCodecCtx, pIMGCodec, NULL) < 0) {
+		LOGE("avcodec_open2 error");
+		return false;
+	}
+
+	//写文件头
+	avformat_write_header(pIMGFormatCtx, NULL);
+
+	AVPacket pkt;
+	int y_size = pIMGCodecCtx->width * pIMGCodecCtx->height;
+	av_new_packet(&pkt, y_size * 3);
+
+	int got_picture = 0;
+	//编码
+	int ret = avcodec_encode_video2(pIMGCodecCtx, &pkt, picture, &got_picture);
+	if (ret < 0) {
+		LOGE("encode error！\n");
+		return false;
+	}
+	if (got_picture == 1) {
+		pkt.stream_index = video_st->index;
+		ret = av_write_frame(pIMGFormatCtx, &pkt);
+	}
+
+	av_free_packet(&pkt);
+	//写文件尾
+	av_write_trailer(pIMGFormatCtx);
+
+	LOGI("save success.");
+
+	if (video_st) {
+		avcodec_close(video_st->codec);
+		av_free(picture);
+		av_free(picture_buf);
+	}
+	avio_close(pIMGFormatCtx->pb);
+	avformat_free_context(pIMGFormatCtx);
 	return true;
 }
 
@@ -563,4 +668,194 @@ GLuint PlayerCore::createProgram(const char* pVertexSource,
 		}
 	}
 	return program;
+}
+
+void PlayerCore::createEngine() {
+	SLresult result;
+
+	// create engine
+	result = slCreateEngine(&engineObject, 0, NULL, 0, NULL, NULL);
+	assert(SL_RESULT_SUCCESS == result);
+	LOGI("reach line : %d,result = SL_RESULT_SUCCESS?%d", __LINE__,
+			SL_RESULT_SUCCESS == result);
+	(void) result;
+
+	// realize the engine
+	result = (*engineObject)->Realize(engineObject, SL_BOOLEAN_FALSE);
+	assert(SL_RESULT_SUCCESS == result);
+	LOGI("reach line : %d,result = SL_RESULT_SUCCESS?%d", __LINE__,
+			SL_RESULT_SUCCESS == result);
+	(void) result;
+
+	// get the engine interface, which is needed in order to create other objects
+	result = (*engineObject)->GetInterface(engineObject, SL_IID_ENGINE,
+			&engineEngine);
+	assert(SL_RESULT_SUCCESS == result);
+	LOGI("reach line : %d,result = SL_RESULT_SUCCESS?%d", __LINE__,
+			SL_RESULT_SUCCESS == result);
+	(void) result;
+
+	// create output mix, with environmental reverb specified as a non-required interface
+	const SLInterfaceID ids[1] = { SL_IID_ENVIRONMENTALREVERB };
+	const SLboolean req[1] = { SL_BOOLEAN_FALSE };
+	result = (*engineEngine)->CreateOutputMix(engineEngine, &outputMixObject, 1,
+			ids, req);
+	assert(SL_RESULT_SUCCESS == result);
+	LOGI("reach line : %d,result = SL_RESULT_SUCCESS?%d", __LINE__,
+			SL_RESULT_SUCCESS == result);
+	(void) result;
+
+	// realize the output mix
+	result = (*outputMixObject)->Realize(outputMixObject, SL_BOOLEAN_FALSE);
+	assert(SL_RESULT_SUCCESS == result);
+	LOGI("reach line : %d,result = SL_RESULT_SUCCESS?%d", __LINE__,
+			SL_RESULT_SUCCESS == result);
+	(void) result;
+
+	// get the environmental reverb interface
+	// this could fail if the environmental reverb effect is not available,
+	// either because the feature is not present, excessive CPU load, or
+	// the required MODIFY_AUDIO_SETTINGS permission was not requested and granted
+	result = (*outputMixObject)->GetInterface(outputMixObject,
+			SL_IID_ENVIRONMENTALREVERB, &outputMixEnvironmentalReverb);
+	LOGI("reach line : %d,result = SL_RESULT_SUCCESS?%d", __LINE__,
+			SL_RESULT_SUCCESS == result);
+	if (SL_RESULT_SUCCESS == result) {
+		result =
+				(*outputMixEnvironmentalReverb)->SetEnvironmentalReverbProperties(
+						outputMixEnvironmentalReverb, &reverbSettings);
+		LOGI("reach line : %d,result = SL_RESULT_SUCCESS?%d", __LINE__,
+				SL_RESULT_SUCCESS == result);
+		(void) result;
+	}
+	// ignore unsuccessful result codes for environmental reverb, as it is optional for this example
+}
+
+void PlayerCore::createBufferQueueAudioPlayer(int rate, int channel,
+		int bitsPerSample) {
+	SLresult result;
+
+	// configure audio source
+	SLDataLocator_AndroidSimpleBufferQueue loc_bufq = {
+			SL_DATALOCATOR_ANDROIDSIMPLEBUFFERQUEUE, 2 };
+//	SLDataFormat_PCM format_pcm = { SL_DATAFORMAT_PCM, 1, SL_SAMPLINGRATE_8,
+//			SL_PCMSAMPLEFORMAT_FIXED_16, SL_PCMSAMPLEFORMAT_FIXED_16,
+//			SL_SPEAKER_FRONT_CENTER, SL_BYTEORDER_LITTLEENDIAN };
+
+	SLDataFormat_PCM format_pcm;
+	format_pcm.formatType = SL_DATAFORMAT_PCM;
+	format_pcm.numChannels = channel;
+	format_pcm.samplesPerSec = rate * 1000;
+	format_pcm.bitsPerSample = bitsPerSample;
+	format_pcm.containerSize = 16;
+	if (channel == 2)
+		format_pcm.channelMask = SL_SPEAKER_FRONT_LEFT | SL_SPEAKER_FRONT_RIGHT;
+	else
+		format_pcm.channelMask = SL_SPEAKER_FRONT_CENTER;
+	format_pcm.endianness = SL_BYTEORDER_LITTLEENDIAN;
+
+	SLDataSource audioSrc = { &loc_bufq, &format_pcm };
+
+	// configure audio sink
+	SLDataLocator_OutputMix loc_outmix = { SL_DATALOCATOR_OUTPUTMIX,
+			outputMixObject };
+	SLDataSink audioSnk = { &loc_outmix, NULL };
+
+	// create audio player
+	const SLInterfaceID ids[3] = { SL_IID_BUFFERQUEUE, SL_IID_EFFECTSEND,
+	/*SL_IID_MUTESOLO,*/SL_IID_VOLUME };
+	const SLboolean req[3] = { SL_BOOLEAN_TRUE, SL_BOOLEAN_TRUE,
+	/*SL_BOOLEAN_TRUE,*/SL_BOOLEAN_TRUE };
+	result = (*engineEngine)->CreateAudioPlayer(engineEngine, &bqPlayerObject,
+			&audioSrc, &audioSnk, 3, ids, req);
+	assert(SL_RESULT_SUCCESS == result);
+	LOGI("reach line : %d,result = SL_RESULT_SUCCESS?%d", __LINE__,
+			SL_RESULT_SUCCESS == result);
+	(void) result;
+
+	// realize the player
+	result = (*bqPlayerObject)->Realize(bqPlayerObject, SL_BOOLEAN_FALSE);
+	assert(SL_RESULT_SUCCESS == result);
+	LOGI("reach line : %d,result = SL_RESULT_SUCCESS?%d", __LINE__,
+			SL_RESULT_SUCCESS == result);
+	(void) result;
+
+	// get the play interface
+	result = (*bqPlayerObject)->GetInterface(bqPlayerObject, SL_IID_PLAY,
+			&bqPlayerPlay);
+	assert(SL_RESULT_SUCCESS == result);
+	LOGI("reach line : %d,result = SL_RESULT_SUCCESS?%d", __LINE__,
+			SL_RESULT_SUCCESS == result);
+	(void) result;
+
+	// get the buffer queue interface
+	result = (*bqPlayerObject)->GetInterface(bqPlayerObject, SL_IID_BUFFERQUEUE,
+			&bqPlayerBufferQueue);
+	assert(SL_RESULT_SUCCESS == result);
+	LOGI("reach line : %d,result = SL_RESULT_SUCCESS?%d", __LINE__,
+			SL_RESULT_SUCCESS == result);
+	(void) result;
+
+	// register callback on the buffer queue
+	result = (*bqPlayerBufferQueue)->RegisterCallback(bqPlayerBufferQueue,
+			staticPlayerCallback, this);
+	assert(SL_RESULT_SUCCESS == result);
+	LOGI("reach line : %d,result = SL_RESULT_SUCCESS?%d", __LINE__,
+			SL_RESULT_SUCCESS == result);
+	(void) result;
+
+	// get the effect send interface
+	result = (*bqPlayerObject)->GetInterface(bqPlayerObject, SL_IID_EFFECTSEND,
+			&bqPlayerEffectSend);
+	assert(SL_RESULT_SUCCESS == result);
+	LOGI("reach line : %d,result = SL_RESULT_SUCCESS?%d", __LINE__,
+			SL_RESULT_SUCCESS == result);
+	(void) result;
+
+#if 0   // mute/solo is not supported for sources that are known to be mono, as this is
+	// get the mute/solo interface
+	result = (*bqPlayerObject)->GetInterface(bqPlayerObject, SL_IID_MUTESOLO, &bqPlayerMuteSolo);
+	assert(SL_RESULT_SUCCESS == result);
+	(void)result;
+#endif
+
+	// get the volume interface
+	result = (*bqPlayerObject)->GetInterface(bqPlayerObject, SL_IID_VOLUME,
+			&bqPlayerVolume);
+	assert(SL_RESULT_SUCCESS == result);
+	LOGI("reach line : %d,result = SL_RESULT_SUCCESS?%d", __LINE__,
+			SL_RESULT_SUCCESS == result);
+	(void) result;
+
+	// set the player's state to playing
+	result = (*bqPlayerPlay)->SetPlayState(bqPlayerPlay, SL_PLAYSTATE_PLAYING);
+	assert(SL_RESULT_SUCCESS == result);
+	LOGI("reach line : %d,result = SL_RESULT_SUCCESS?%d", __LINE__,
+			SL_RESULT_SUCCESS == result);
+	(void) result;
+}
+
+void PlayerCore::bqPlayerCallback(SLAndroidSimpleBufferQueueItf bq,
+		void* context) {
+	assert(bq == bqPlayerBufferQueue);
+	assert(NULL == context);
+	// for streaming playback, replace this test by logic to find and fill the next buffer
+	if (--nextCount > 0 && NULL != nextBuffer && 0 != nextSize) {
+		SLresult result;
+		// enqueue another buffer
+		result = (*bqPlayerBufferQueue)->Enqueue(bqPlayerBufferQueue,
+				nextBuffer, nextSize);
+		// the most likely other result is SL_RESULT_BUFFER_INSUFFICIENT,
+		// which for this code example would indicate a programming error
+		assert(SL_RESULT_SUCCESS == result);
+		(void) result;
+	}
+}
+
+void PlayerCore::audioWrite(AVFrame* pFrame) {
+	int data_size = av_samples_get_buffer_size(pFrame->linesize,
+			pAudioCodecCtx->channels, pFrame->nb_samples,
+			pAudioCodecCtx->sample_fmt, 1);
+	(*bqPlayerBufferQueue)->Enqueue(bqPlayerBufferQueue, pFrame->data[0],
+			data_size);
 }

@@ -23,6 +23,10 @@ extern "C" {
 #include <GLES/gl.h>
 #include <GLES2/gl2ext.h>
 
+// for native audio
+#include <SLES/OpenSLES.h>
+#include <SLES/OpenSLES_Android.h>
+
 #include "VertexShaderSL.h"
 #include "FragmentShaderSL.h"
 
@@ -49,6 +53,7 @@ public:
 
 	void *dataThreadFun();
 	void *decodeThreadFun();
+	void bqPlayerCallback(SLAndroidSimpleBufferQueueItf bq, void *context);
 
 	bool setupGraphics(int width, int height);
 	void renderFrame();
@@ -56,8 +61,8 @@ public:
 	void setSpeed(int sp);
 private:
 	AVFormatContext *pFormatCtx;
-	AVCodecContext *pCodecCtx;
-	AVCodec *pCodec;
+	AVCodecContext *pVideoCodecCtx, *pAudioCodecCtx;
+	AVCodec *pVideoCodec, *pAudioCodec;
 	AVFrame *currentFrame;
 
 	int videoindex,audioindex;
@@ -76,6 +81,24 @@ private:
 	GLuint g_texYId, g_texUId, g_texVId;
 	GLuint textureUniformY, textureUniformU, textureUniformV;
 
+	//opensl es
+	SLObjectItf engineObject;
+	SLEngineItf engineEngine;
+
+	SLObjectItf outputMixObject;
+	SLEnvironmentalReverbItf outputMixEnvironmentalReverb;
+
+	SLObjectItf bqPlayerObject;
+	SLPlayItf bqPlayerPlay;
+	SLAndroidSimpleBufferQueueItf bqPlayerBufferQueue;
+	SLEffectSendItf bqPlayerEffectSend;
+	SLMuteSoloItf bqPlayerMuteSolo;
+	SLVolumeItf bqPlayerVolume;
+
+	short *nextBuffer;
+	unsigned nextSize;
+	int nextCount;
+
 	int getPreDecodeListSize();
 	int getDecodedListSize();
 	void clearPreDecodeList();
@@ -92,6 +115,10 @@ private:
 	GLuint createProgram(const char* pVertexSource,
 			const char* pFragmentSource);
 	bool getFrameByTime();
+	//opensl es
+	void createEngine();
+	void createBufferQueueAudioPlayer(int rate, int channel, int bitsPerSample);
+	void audioWrite(AVFrame *pFrame);
 };
 
 #endif /* NATIVEPLAYER_PLAYERCORE_H_ */
