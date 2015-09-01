@@ -2,6 +2,8 @@
 #include <unistd.h>
 #include <assert.h>
 
+#define MAX_AUDIO_FRAME_SIZE 192000 // 1 second of 48khz 32bit audio
+
 static const GLfloat vertexVertices[] = { -1.0f, -1.0f, 1.0f, -1.0f, -1.0f,
 		1.0f, 1.0f, 1.0f, };
 static const GLfloat textureVertices[] = { 0.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f,
@@ -242,14 +244,35 @@ void *PlayerCore::decodeThreadFun() {
 	int ret, gotPicture = 0, gotAudio = 0;
 
 	int count = 0;
-
-	FILE *pFile = fopen("/sdcard/save.PCM","wb+");
+	uint8_t *out_buffer;
+	FILE *pFile = fopen("/sdcard/save.PCM", "wb+");
 
 	if (pFile) {
 		LOGI("open save file.");
-	}else{
+	} else {
 		LOGE("fail save file.");
 	}
+
+	//Out Audio Param
+	uint64_t out_channel_layout = AV_CH_LAYOUT_STEREO;
+	//nb_samples: AAC-1024 MP3-1152
+	int out_nb_samples = pAudioCodecCtx->frame_size;
+	AVSampleFormat out_sample_fmt = AV_SAMPLE_FMT_S16;
+	int out_sample_rate = 44100;
+	int out_channels = av_get_channel_layout_nb_channels(out_channel_layout);
+	int out_buffer_size = av_samples_get_buffer_size(NULL, out_channels,
+			out_nb_samples, out_sample_fmt, 1);
+
+	out_buffer = (uint8_t *) av_malloc(MAX_AUDIO_FRAME_SIZE * 2);
+
+	//FIX:Some Codec's Context Information is missing
+	int in_channel_layout = av_get_default_channel_layout(pAudioCodecCtx->channels);
+	//Swr
+	struct SwrContext *au_convert_ctx = swr_alloc();
+	au_convert_ctx = swr_alloc_set_opts(au_convert_ctx, out_channel_layout,
+			out_sample_fmt, out_sample_rate, in_channel_layout,
+			pAudioCodecCtx->sample_fmt, pAudioCodecCtx->sample_rate, 0, NULL);
+	swr_init(au_convert_ctx);
 
 	while (isRun) {
 		if (getPreDecodeListSize() < 1) {
@@ -294,18 +317,21 @@ void *PlayerCore::decodeThreadFun() {
 			}
 			if (gotAudio) {
 //				audioWrite(pAudioFrame);
-				if(count++ < 300) {
-					if(pFile) {
-						LOGI("write %d size: %d",count,pAudioFrame->linesize[0]);
-						fwrite(pAudioFrame->data[0],1,pAudioFrame->linesize[0],pFile);
-					}
-				}else {
-					if(pFile) {
-						fclose(pFile);
-						delete pFile;
-						pFile = NULL;
-					}
-				}
+				swr_convert(au_convert_ctx,&out_buffer, MAX_AUDIO_FRAME_SIZE,(const uint8_t **)pAudioFrame->data , pAudioFrame->nb_samples);
+				(*bqPlayerBufferQueue)->Enqueue(bqPlayerBufferQueue, out_buffer,
+						out_buffer_size);
+//				if (count++ < 1000) {
+//					if (pFile) {
+//						LOGI("index:%5d\t pts:%lld\t packet size:%d\n",count,packet->pts,packet->size);
+//						fwrite(out_buffer, 1, out_buffer_size, pFile);
+//					}
+//				} else {
+//					if (pFile) {
+//						fclose(pFile);
+//						delete pFile;
+//						pFile = NULL;
+//					}
+//				}
 				av_frame_free(&pAudioFrame);
 			} else {
 				av_frame_free(&pAudioFrame);
@@ -533,7 +559,7 @@ bool PlayerCore::saveFrame(const char *filePath) {
 	picture = av_frame_alloc();
 	memcpy(picture, tmpFram, sizeof(AVFrame));
 
-	int in_w = picture->width, in_h = picture->height;						//���
+	int in_w = picture->width, in_h = picture->height;					//锟斤拷锟�
 
 	LOGI("in_w:%d,in_h:%d", in_w, in_h);
 
@@ -557,7 +583,7 @@ bool PlayerCore::saveFrame(const char *filePath) {
 
 	pIMGCodecCtx->time_base.num = 1;
 	pIMGCodecCtx->time_base.den = 25;
-	//�����ʽ��Ϣ
+	//锟斤拷锟斤拷锟绞斤拷锟较�
 	av_dump_format(pIMGFormatCtx, 0, filePath, 1);
 
 	pIMGCodec = avcodec_find_encoder(pIMGCodecCtx->codec_id);
@@ -570,7 +596,7 @@ bool PlayerCore::saveFrame(const char *filePath) {
 		return false;
 	}
 
-	//д�ļ�ͷ
+	//写锟侥硷拷头
 	avformat_write_header(pIMGFormatCtx, NULL);
 
 	AVPacket pkt;
@@ -578,10 +604,10 @@ bool PlayerCore::saveFrame(const char *filePath) {
 	av_new_packet(&pkt, y_size * 3);
 
 	int got_picture = 0;
-	//����
+	//锟斤拷锟斤拷
 	int ret = avcodec_encode_video2(pIMGCodecCtx, &pkt, picture, &got_picture);
 	if (ret < 0) {
-		LOGE("encode error��\n");
+		LOGE("encode error锟斤拷\n");
 		return false;
 	}
 	if (got_picture == 1) {
@@ -590,7 +616,7 @@ bool PlayerCore::saveFrame(const char *filePath) {
 	}
 
 	av_free_packet(&pkt);
-	//д�ļ�β
+	//写锟侥硷拷尾
 	av_write_trailer(pIMGFormatCtx);
 
 	LOGI("save success.");
