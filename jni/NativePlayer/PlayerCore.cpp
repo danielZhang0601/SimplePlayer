@@ -241,6 +241,16 @@ void *PlayerCore::dataThreadFun() {
 void *PlayerCore::decodeThreadFun() {
 	int ret, gotPicture = 0, gotAudio = 0;
 
+	int count = 0;
+
+	FILE *pFile = fopen("/sdcard/save.PCM","wb+");
+
+	if (pFile) {
+		LOGI("open save file.");
+	}else{
+		LOGE("fail save file.");
+	}
+
 	while (isRun) {
 		if (getPreDecodeListSize() < 1) {
 			wait();
@@ -271,7 +281,7 @@ void *PlayerCore::decodeThreadFun() {
 			} else {
 				av_frame_free(&pFrame);
 			}
-		} else if (packet->stream_index = audioindex) {
+		} else if (packet->stream_index == audioindex) {
 			AVFrame *pAudioFrame = av_frame_alloc();
 			ret = avcodec_decode_audio4(pAudioCodecCtx, pAudioFrame, &gotAudio,
 					packet);
@@ -283,7 +293,19 @@ void *PlayerCore::decodeThreadFun() {
 				return 0;
 			}
 			if (gotAudio) {
-				audioWrite(pAudioFrame);
+//				audioWrite(pAudioFrame);
+				if(count++ < 300) {
+					if(pFile) {
+						LOGI("write %d size: %d",count,pAudioFrame->linesize[0]);
+						fwrite(pAudioFrame->data[0],1,pAudioFrame->linesize[0],pFile);
+					}
+				}else {
+					if(pFile) {
+						fclose(pFile);
+						delete pFile;
+						pFile = NULL;
+					}
+				}
 				av_frame_free(&pAudioFrame);
 			} else {
 				av_frame_free(&pAudioFrame);
@@ -511,7 +533,7 @@ bool PlayerCore::saveFrame(const char *filePath) {
 	picture = av_frame_alloc();
 	memcpy(picture, tmpFram, sizeof(AVFrame));
 
-	int in_w = picture->width, in_h = picture->height;						//¿í¸ß
+	int in_w = picture->width, in_h = picture->height;						//ï¿½ï¿½ï¿½
 
 	LOGI("in_w:%d,in_h:%d", in_w, in_h);
 
@@ -535,7 +557,7 @@ bool PlayerCore::saveFrame(const char *filePath) {
 
 	pIMGCodecCtx->time_base.num = 1;
 	pIMGCodecCtx->time_base.den = 25;
-	//Êä³ö¸ñÊ½ÐÅÏ¢
+	//ï¿½ï¿½ï¿½ï¿½ï¿½Ê½ï¿½ï¿½Ï¢
 	av_dump_format(pIMGFormatCtx, 0, filePath, 1);
 
 	pIMGCodec = avcodec_find_encoder(pIMGCodecCtx->codec_id);
@@ -548,7 +570,7 @@ bool PlayerCore::saveFrame(const char *filePath) {
 		return false;
 	}
 
-	//Ð´ÎÄ¼þÍ·
+	//Ð´ï¿½Ä¼ï¿½Í·
 	avformat_write_header(pIMGFormatCtx, NULL);
 
 	AVPacket pkt;
@@ -556,10 +578,10 @@ bool PlayerCore::saveFrame(const char *filePath) {
 	av_new_packet(&pkt, y_size * 3);
 
 	int got_picture = 0;
-	//±àÂë
+	//ï¿½ï¿½ï¿½ï¿½
 	int ret = avcodec_encode_video2(pIMGCodecCtx, &pkt, picture, &got_picture);
 	if (ret < 0) {
-		LOGE("encode error£¡\n");
+		LOGE("encode errorï¿½ï¿½\n");
 		return false;
 	}
 	if (got_picture == 1) {
@@ -568,7 +590,7 @@ bool PlayerCore::saveFrame(const char *filePath) {
 	}
 
 	av_free_packet(&pkt);
-	//Ð´ÎÄ¼þÎ²
+	//Ð´ï¿½Ä¼ï¿½Î²
 	av_write_trailer(pIMGFormatCtx);
 
 	LOGI("save success.");
@@ -747,7 +769,7 @@ void PlayerCore::createBufferQueueAudioPlayer(int rate, int channel,
 	format_pcm.numChannels = channel;
 	format_pcm.samplesPerSec = rate * 1000;
 	format_pcm.bitsPerSample = bitsPerSample;
-	format_pcm.containerSize = 16;
+	format_pcm.containerSize = bitsPerSample;
 	if (channel == 2)
 		format_pcm.channelMask = SL_SPEAKER_FRONT_LEFT | SL_SPEAKER_FRONT_RIGHT;
 	else
